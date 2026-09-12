@@ -41,7 +41,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
+            MyApplicationTheme(darkTheme = isDarkMode) {
                 HydroGisMainScreen(viewModel = viewModel)
             }
         }
@@ -81,6 +82,9 @@ fun HydroGisMainScreen(viewModel: GisViewModel) {
     val syncMetadata by viewModel.syncMetadata.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
+    val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
+    val chargingWifiWorkInfo by viewModel.chargingWifiWorkInfo.collectAsStateWithLifecycle()
+    val oneTimeWorkInfo by viewModel.oneTimeChargingWifiWorkInfo.collectAsStateWithLifecycle()
 
     // Dialog & Sheet states
     var showLayerDialog by remember { mutableStateOf(false) }
@@ -223,6 +227,9 @@ fun HydroGisMainScreen(viewModel: GisViewModel) {
                             syncMetadata = syncMetadata,
                             isSyncing = isSyncing,
                             totalFeatureCount = totalFeatureCount,
+                            chargingWifiWorkInfo = chargingWifiWorkInfo,
+                            oneTimeWorkInfo = oneTimeWorkInfo,
+                            onQueueChargingWifiSync = { viewModel.queueChargingWifiSync() },
                             onSyncAll = { viewModel.syncAllData() },
                             onSyncSingle = { key -> viewModel.syncSingleSource(key) },
                             onExportCsv = { viewModel.exportCsv(searchResults) },
@@ -273,6 +280,18 @@ fun HydroGisMainScreen(viewModel: GisViewModel) {
                     }
                 },
                 actions = {
+                    // Switch between light or dark mode
+                    IconButton(
+                        onClick = { viewModel.toggleDarkMode() },
+                        modifier = Modifier.testTag("topbar_btn_theme_toggle")
+                    ) {
+                        Icon(
+                            imageVector = if (isDarkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                            contentDescription = if (isDarkMode) "Beralih ke Mode Terang" else "Beralih ke Mode Gelap",
+                            tint = if (isDarkMode) Color(0xFFFBBF24) else MaterialTheme.colorScheme.primary
+                        )
+                    }
+
                     IconButton(
                         onClick = { viewModel.syncAllData() },
                         enabled = !isSyncing,
@@ -355,8 +374,10 @@ fun HydroGisMainScreen(viewModel: GisViewModel) {
             showBatasDesa = layerBatasDesa,
             showIrigasi = layerIrigasi,
             showSungai = layerSungai,
+            isDarkMode = isDarkMode,
             onSelectBasemap = { viewModel.setBasemap(it) },
             onToggleLayer = { viewModel.toggleLayer(it) },
+            onToggleDarkMode = { viewModel.toggleDarkMode() },
             onDismiss = { showLayerDialog = false }
         )
     }

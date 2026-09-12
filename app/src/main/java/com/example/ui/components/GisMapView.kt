@@ -50,6 +50,7 @@ fun GisMapView(
     val context = LocalContext.current
     val tileProvider = remember { TileProvider(context) }
     val coroutineScope = rememberCoroutineScope()
+    val fallbackTileBg = MaterialTheme.colorScheme.background
 
     // Smooth pulsing animation for selected feature
     val infiniteTransition = rememberInfiniteTransition(label = "highlight_pulse")
@@ -170,7 +171,7 @@ fun GisMapView(
                         } else {
                             // Fallback subtle tile grid background
                             drawRect(
-                                color = if (basemapType == BasemapType.SATELLITE) Color(0xFF1E293B) else Color(0xFFF1F5F9),
+                                color = if (basemapType == BasemapType.SATELLITE) Color(0xFF1E293B) else fallbackTileBg,
                                 topLeft = Offset(screenTileX, screenTileY),
                                 size = androidx.compose.ui.geometry.Size(tileSizeAtZoom, tileSizeAtZoom)
                             )

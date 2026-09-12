@@ -33,6 +33,9 @@ interface InspectionDao {
     @Query("SELECT * FROM inspections ORDER BY createdAt DESC")
     fun getAllInspections(): Flow<List<InspectionEntity>>
 
+    @Query("SELECT * FROM inspections ORDER BY createdAt DESC")
+    suspend fun getAllInspectionList(): List<InspectionEntity>
+
     @Query("SELECT * FROM inspections WHERE featureId = :featureId ORDER BY createdAt DESC")
     fun getInspectionsForFeature(featureId: String): Flow<List<InspectionEntity>>
 

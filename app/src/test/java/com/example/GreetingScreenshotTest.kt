@@ -41,7 +41,7 @@ class GreetingScreenshotTest {
       maxLng = 108.4,
       maxLat = -7.3,
       propertiesJson = "{\"NAMA\":\"D.I. Cikunten\",\"STATUS\":\"Aktif\"}",
-      geometryJson = "{}"
+      coordinatesJson = "[[[108.3,-7.35],[108.4,-7.35],[108.4,-7.3],[108.3,-7.3],[108.3,-7.35]]]"
     )
 
     composeTestRule.setContent {

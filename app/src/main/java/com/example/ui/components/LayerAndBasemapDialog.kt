@@ -22,8 +22,10 @@ fun LayerAndBasemapDialog(
     showBatasDesa: Boolean,
     showIrigasi: Boolean,
     showSungai: Boolean,
+    isDarkMode: Boolean,
     onSelectBasemap: (BasemapType) -> Unit,
     onToggleLayer: (String) -> Unit,
+    onToggleDarkMode: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -109,6 +111,45 @@ fun LayerAndBasemapDialog(
                         isChecked = showSungai,
                         onCheckedChange = { onToggleLayer("sungai") },
                         tag = "toggle_layer_sungai"
+                    )
+                }
+
+                HorizontalDivider()
+
+                // Theme Mode Switch Section
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggleDarkMode() }
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isDarkMode) Icons.Filled.DarkMode else Icons.Filled.LightMode,
+                            contentDescription = null,
+                            tint = if (isDarkMode) Color(0xFFFBBF24) else MaterialTheme.colorScheme.primary
+                        )
+                        Column {
+                            Text(
+                                text = "Mode Gelap (Dark Mode)",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = if (isDarkMode) "Aktif (Tampilan kontras malam)" else "Nonaktif (Tampilan terang siang)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = isDarkMode,
+                        onCheckedChange = { onToggleDarkMode() },
+                        modifier = Modifier.testTag("dialog_switch_dark_mode")
                     )
                 }
             }

@@ -11,7 +11,9 @@ import com.example.data.local.entity.InspectionEntity
 import com.example.data.local.entity.SyncMetadataEntity
 import com.example.data.remote.GisSources
 import com.example.data.repository.GisRepository
+import com.example.data.sync.SyncScheduler
 import com.example.gis.*
+import androidx.work.WorkInfo
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +45,22 @@ class GisViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = GisRepository(application)
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(application)
+    private val prefs = application.getSharedPreferences("hydro_gis_settings", Context.MODE_PRIVATE)
+
+    // Dark Mode Theme State (persisted in SharedPreferences)
+    private val _isDarkMode = MutableStateFlow(
+        prefs.getBoolean("is_dark_mode", false)
+    )
+    val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
+
+    fun toggleDarkMode() {
+        setDarkMode(!_isDarkMode.value)
+    }
+
+    fun setDarkMode(dark: Boolean) {
+        _isDarkMode.value = dark
+        prefs.edit().putBoolean("is_dark_mode", dark).apply()
+    }
 
     // Camera state
     private val _cameraState = MutableStateFlow(MapCameraState())
@@ -108,6 +126,26 @@ class GisViewModel(application: Application) : AndroidViewModel(application) {
 
     val distinctConditions: StateFlow<List<String>> = repository.getDistinctConditions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // WorkManager status for background sync under Charging + Wi-Fi
+    val chargingWifiWorkInfo: StateFlow<WorkInfo?> = SyncScheduler
+        .getPeriodicWorkInfoFlow(application)
+        .map { list -> list.firstOrNull() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val oneTimeChargingWifiWorkInfo: StateFlow<WorkInfo?> = SyncScheduler
+        .getOneTimeWorkInfoFlow(application)
+        .map { list -> list.firstOrNull() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun queueChargingWifiSync() {
+        SyncScheduler.enqueueOneTimeChargingWifiSync(getApplication())
+        _statusMessage.value = "Tugas WorkManager dijadwalkan: Otomatis berjalan saat HP dicas & terhubung Wi-Fi"
+    }
+
+    fun ensureChargingWifiSyncScheduled() {
+        SyncScheduler.scheduleChargingWifiSync(getApplication())
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val searchResults: StateFlow<List<GeoFeatureEntity>> = _filters

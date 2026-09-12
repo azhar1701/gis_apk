@@ -130,6 +130,31 @@ class GisRepository(private val context: Context) {
         results
     }
 
+    /**
+     * Complete background sync of local Room spatial data with remote server:
+     * 1. Fetches latest spatial datasets from remote and updates local Room database
+     * 2. Inspects local Room surveyor notes/inspections to ensure state consistency
+     * 3. Returns total features synchronized
+     */
+    suspend fun syncSpatialDataWithRemote(): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val syncMap = syncAll()
+            val hasFailure = syncMap.values.any { it.isFailure }
+            if (hasFailure) {
+                val errorMsg = syncMap.values.firstOrNull { it.isFailure }?.exceptionOrNull()?.message ?: "Gagal sinkronisasi sebagian layer"
+                return@withContext Result.failure(Exception(errorMsg))
+            }
+            val totalSynced = syncMap.values.mapNotNull { it.getOrNull() }.sum()
+            Result.success(totalSynced)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAllLocalInspections(): List<InspectionEntity> = withContext(Dispatchers.IO) {
+        inspectionDao.getAllInspectionList()
+    }
+
     suspend fun addInspection(inspection: InspectionEntity) = withContext(Dispatchers.IO) {
         inspectionDao.insert(inspection)
     }

@@ -2,8 +2,10 @@ package com.example.ui.components
 
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -18,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.work.WorkInfo
 import com.example.data.local.entity.GeoFeatureEntity
 import com.example.data.local.entity.SyncMetadataEntity
 import kotlinx.coroutines.launch
@@ -32,6 +35,9 @@ fun SyncAndExportPanel(
     syncMetadata: List<SyncMetadataEntity>,
     isSyncing: Boolean,
     totalFeatureCount: Int,
+    chargingWifiWorkInfo: WorkInfo? = null,
+    oneTimeWorkInfo: WorkInfo? = null,
+    onQueueChargingWifiSync: () -> Unit = {},
     onSyncAll: () -> Unit,
     onSyncSingle: (String) -> Unit,
     onExportCsv: suspend () -> String,
@@ -183,27 +189,131 @@ fun SyncAndExportPanel(
             }
         }
 
-        // Battery & Background Sync Info Card
+        // WorkManager Background Sync Task (Charging + Wi-Fi)
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            ),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Filled.BatteryChargingFull,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CloudSync,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Sinkronisasi Latar Belakang (WorkManager)",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    // Periodic Work status badge
+                    val stateName = chargingWifiWorkInfo?.state?.name ?: "TERJADWAL"
+                    val isRunning = chargingWifiWorkInfo?.state == WorkInfo.State.RUNNING || oneTimeWorkInfo?.state == WorkInfo.State.RUNNING
+                    Surface(
+                        shape = CircleShape,
+                        color = if (isRunning) Color(0xFF10B981) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            text = if (isRunning) "SEDANG BERJALAN" else stateName,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                            color = if (isRunning) Color.White else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
                 Text(
-                    text = "Mode Hemat Baterai Aktif: WorkManager menjalankan sinkronisasi latar belakang otomatis hanya ketika perangkat terhubung internet dan daya baterai tidak rendah.",
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = "Tugas latar belakang WorkManager otomatis menyinkronkan data spasial Room dengan server pusat saat kondisi terpenuhi:",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                // Required Constraints Badges
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.BatteryChargingFull,
+                                contentDescription = null,
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Column {
+                                Text("Mengisi Daya", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold))
+                                Text("Charging", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Wifi,
+                                contentDescription = null,
+                                tint = Color(0xFF0284C7),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Column {
+                                Text("Jaringan Wi-Fi", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold))
+                                Text("Unmetered", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+
+                // Action to queue one-time test task
+                OutlinedButton(
+                    onClick = onQueueChargingWifiSync,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("btn_queue_charging_wifi_sync")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "Antrekan Tugas Uji Coba (Jalankan Saat Dicas & Wi-Fi)",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
             }
         }
 
