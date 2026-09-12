@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Center 66dp safe zone (21 to 87 in 108dp viewport) -->
+    <!-- Water drop / GIS shield background -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M54,22 C40,38 32,50 32,62 C32,74.15 41.85,84 54,84 C66.15,84 76,74.15 76,62 C76,50 68,38 54,22 Z" />
+    <!-- Deep water flow accent -->
+    <path
+        android:fillColor="#0284C7"
+        android:pathData="M54,28 C43,42 36,52 36,62 C36,72 44,80 54,80 C64,80 72,72 72,62 C72,52 65,42 54,28 Z" />
+    <!-- Vector River winding path -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M54,36 C50,44 58,49 53,56 C48,63 56,68 53,75" />
+    <!-- Location Pin Node in river center -->
+    <path
+        android:fillColor="#FBBF24"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:pathData="M53,52 C51.34,52 50,50.66 50,49 C50,46.5 53,43 53,43 C53,43 56,46.5 56,49 C56,50.66 54.66,52 53,52 Z" />
+</vector>
