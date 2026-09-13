@@ -18,6 +18,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -147,8 +148,9 @@ class GisViewModel(application: Application) : AndroidViewModel(application) {
         SyncScheduler.scheduleChargingWifiSync(getApplication())
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val searchResults: StateFlow<List<GeoFeatureEntity>> = _filters
+        .debounce { f -> if (f.query.isEmpty()) 0L else 200L }
         .flatMapLatest { f ->
             repository.filterFeatures(
                 query = f.query,
@@ -160,6 +162,7 @@ class GisViewModel(application: Application) : AndroidViewModel(application) {
                 condition = f.condition
             )
         }
+        .flowOn(Dispatchers.IO)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // In-memory cache of renderable features
@@ -328,67 +331,73 @@ class GisViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Handles spatial tap on the map.
-     * Evaluates all visible layers, calculates distance/containment, and disambiguates overlapping features.
+     * Evaluates all visible layers, calculates distance/containment, and disambiguates overlapping features
+     * asynchronously on Dispatchers.Default to ensure the UI thread stays 100% responsive.
      */
     fun onMapTapped(tapLng: Double, tapLat: Double, zoom: Double) {
-        val tapPoint = GisPoint(tapLng, tapLat)
-        
-        // Pixel tolerance converted to degrees based on zoom
-        val degTolerance = (360.0 / (MercatorProjection.TILE_SIZE * Math.pow(2.0, zoom))) * 24.0
+        viewModelScope.launch(Dispatchers.Default) {
+            val tapPoint = GisPoint(tapLng, tapLat)
+            
+            // Pixel tolerance converted to degrees based on zoom
+            val degTolerance = (360.0 / (MercatorProjection.TILE_SIZE * Math.pow(2.0, zoom))) * 24.0
 
-        val candidates = mutableListOf<GeoFeatureEntity>()
+            val currentFeatures = _renderableFeatures.value
+            val candidates = mutableListOf<GeoFeatureEntity>()
 
-        for (rf in _renderableFeatures.value) {
-            val entity = rf.entity
-            // Fast bounding box check with tolerance
-            if (tapLng < entity.minLng - degTolerance || tapLng > entity.maxLng + degTolerance ||
-                tapLat < entity.minLat - degTolerance || tapLat > entity.maxLat + degTolerance) {
-                continue
+            for (rf in currentFeatures) {
+                val entity = rf.entity
+                // Fast bounding box check with tolerance
+                if (tapLng < entity.minLng - degTolerance || tapLng > entity.maxLng + degTolerance ||
+                    tapLat < entity.minLat - degTolerance || tapLat > entity.maxLat + degTolerance) {
+                    continue
+                }
+
+                var hit = false
+                when (val geom = rf.geometry) {
+                    is FeatureGeometry.Point -> {
+                        hit = Math.hypot(tapLng - geom.point.lng, tapLat - geom.point.lat) <= degTolerance
+                    }
+                    is FeatureGeometry.MultiPoint -> {
+                        hit = geom.points.any { Math.hypot(tapLng - it.lng, tapLat - it.lat) <= degTolerance }
+                    }
+                    is FeatureGeometry.LineString -> {
+                        hit = SpatialAlgorithms.pointToPolylineDistance(tapPoint, geom.points) <= degTolerance
+                    }
+                    is FeatureGeometry.MultiLineString -> {
+                        hit = geom.lines.any { SpatialAlgorithms.pointToPolylineDistance(tapPoint, it) <= degTolerance }
+                    }
+                    is FeatureGeometry.Polygon -> {
+                        hit = geom.rings.isNotEmpty() && SpatialAlgorithms.isPointInPolygon(tapPoint, geom.rings[0])
+                    }
+                    is FeatureGeometry.MultiPolygon -> {
+                        hit = geom.polygons.any { rings -> rings.isNotEmpty() && SpatialAlgorithms.isPointInPolygon(tapPoint, rings[0]) }
+                    }
+                }
+
+                if (hit) {
+                    candidates.add(entity)
+                }
             }
 
-            var hit = false
-            when (val geom = rf.geometry) {
-                is FeatureGeometry.Point -> {
-                    hit = Math.hypot(tapLng - geom.point.lng, tapLat - geom.point.lat) <= degTolerance
-                }
-                is FeatureGeometry.MultiPoint -> {
-                    hit = geom.points.any { Math.hypot(tapLng - it.lng, tapLat - it.lat) <= degTolerance }
-                }
-                is FeatureGeometry.LineString -> {
-                    hit = SpatialAlgorithms.pointToPolylineDistance(tapPoint, geom.points) <= degTolerance
-                }
-                is FeatureGeometry.MultiLineString -> {
-                    hit = geom.lines.any { SpatialAlgorithms.pointToPolylineDistance(tapPoint, it) <= degTolerance }
-                }
-                is FeatureGeometry.Polygon -> {
-                    hit = geom.rings.isNotEmpty() && SpatialAlgorithms.isPointInPolygon(tapPoint, geom.rings[0])
-                }
-                is FeatureGeometry.MultiPolygon -> {
-                    hit = geom.polygons.any { rings -> rings.isNotEmpty() && SpatialAlgorithms.isPointInPolygon(tapPoint, rings[0]) }
+            // Sort candidates by visual priority (Points > Lines > Polygons)
+            candidates.sortByDescending {
+                when (it.geometryType) {
+                    "Point", "MultiPoint" -> 3
+                    "LineString", "MultiLineString" -> 2
+                    else -> 1
                 }
             }
 
-            if (hit) {
-                candidates.add(entity)
+            withContext(Dispatchers.Main) {
+                if (candidates.size == 1) {
+                    selectFeature(candidates[0])
+                } else if (candidates.size > 1) {
+                    _candidateFeatures.value = candidates
+                    _selectedFeature.value = candidates[0]
+                } else {
+                    clearSelection()
+                }
             }
-        }
-
-        // Sort candidates by visual priority (Points > Lines > Polygons)
-        candidates.sortByDescending {
-            when (it.geometryType) {
-                "Point", "MultiPoint" -> 3
-                "LineString", "MultiLineString" -> 2
-                else -> 1
-            }
-        }
-
-        if (candidates.size == 1) {
-            selectFeature(candidates[0])
-        } else if (candidates.size > 1) {
-            _candidateFeatures.value = candidates
-            _selectedFeature.value = candidates[0]
-        } else {
-            clearSelection()
         }
     }
 

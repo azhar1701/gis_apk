@@ -23,8 +23,8 @@ enum class BasemapType(val title: String) {
 class TileProvider(private val context: Context) {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
         .build()
 
     // 64MB memory cache for quick tile rendering
@@ -120,5 +120,13 @@ class TileProvider(private val context: Context) {
         memoryCache.evictAll()
         tileCacheDir.deleteRecursively()
         tileCacheDir.mkdirs()
+    }
+
+    /**
+     * Immediate in-memory tile lookup (Zero delay, non-blocking).
+     */
+    fun getTileFromMemory(type: BasemapType, x: Int, y: Int, z: Int): Bitmap? {
+        val cacheKey = "${type.name}_${z}_${x}_$y"
+        return memoryCache.get(cacheKey)
     }
 }

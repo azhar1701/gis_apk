@@ -1,12 +1,12 @@
 package com.example.ui.components
 
 import android.graphics.Bitmap
-import android.graphics.Paint
-import android.graphics.Rect
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -20,7 +20,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -28,9 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.local.entity.GeoFeatureEntity
 import com.example.gis.*
 import com.example.ui.MapCameraState
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import kotlin.math.*
 
 @Composable
@@ -49,90 +46,173 @@ fun GisMapView(
 ) {
     val context = LocalContext.current
     val tileProvider = remember { TileProvider(context) }
-    val coroutineScope = rememberCoroutineScope()
     val fallbackTileBg = MaterialTheme.colorScheme.background
 
-    // Smooth pulsing animation for selected feature
-    val infiniteTransition = rememberInfiniteTransition(label = "highlight_pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 0.85f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
+    // Track latest states in long-lived coroutines to prevent stale closures
+    val currentCameraState by rememberUpdatedState(cameraState)
+    val currentOnCameraChange by rememberUpdatedState(onCameraChange)
+    val currentOnMapTapped by rememberUpdatedState(onMapTapped)
 
-    // Cached map tiles map
-    var tileBitmaps by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
+    // Reusable Path instance to achieve ZERO GC allocation during drawing frames
+    val reusablePath = remember { Path() }
 
-    // Load tiles whenever camera changes
+    // Persistent in-memory tile cache across camera changes to avoid screen flicker
+    val tileBitmaps = remember { mutableStateMapOf<String, Bitmap>() }
+
+    // Debounced, concurrent background tile fetching
     LaunchedEffect(cameraState.centerLng, cameraState.centerLat, cameraState.zoom, basemapType) {
+        // Debounce micro-gestures to prevent hammering I/O on rapid pan/zoom
+        delay(60)
+
         val zoomInt = cameraState.zoom.toInt().coerceIn(0, 19)
         val numTiles = 1 shl zoomInt
         val (worldX, worldY) = MercatorProjection.toWorld(cameraState.centerLng, cameraState.centerLat)
         val centerTileX = (worldX * numTiles).toInt().coerceIn(0, numTiles - 1)
         val centerTileY = (worldY * numTiles).toInt().coerceIn(0, numTiles - 1)
 
-        val newTiles = mutableMapOf<String, Bitmap>()
-        val radius = 2 // Load 5x5 tile window around screen center
+        val radius = 2 // 5x5 viewport tile grid
+        withContext(Dispatchers.IO) {
+            coroutineScope {
+                val jobs = mutableListOf<Deferred<Pair<String, Bitmap>?>>()
 
-        coroutineScope.launch {
-            for (dx in -radius..radius) {
-                for (dy in -radius..radius) {
-                    val tx = (centerTileX + dx).coerceIn(0, numTiles - 1)
-                    val ty = (centerTileY + dy).coerceIn(0, numTiles - 1)
-                    val key = "${basemapType.name}_${zoomInt}_${tx}_$ty"
-                    val bmp = tileProvider.loadTile(basemapType, tx, ty, zoomInt)
-                    if (bmp != null) {
-                        newTiles[key] = bmp
+                for (dx in -radius..radius) {
+                    for (dy in -radius..radius) {
+                        val tx = (centerTileX + dx).coerceIn(0, numTiles - 1)
+                        val ty = (centerTileY + dy).coerceIn(0, numTiles - 1)
+                        val key = "${basemapType.name}_${zoomInt}_${tx}_$ty"
+
+                        if (tileBitmaps.containsKey(key)) continue
+
+                        // Immediate fast memory cache hit
+                        val memTile = tileProvider.getTileFromMemory(basemapType, tx, ty, zoomInt)
+                        if (memTile != null) {
+                            withContext(Dispatchers.Main) {
+                                tileBitmaps[key] = memTile
+                            }
+                            continue
+                        }
+
+                        // Asynchronous concurrent fetch
+                        jobs.add(async {
+                            val bmp = tileProvider.loadTile(basemapType, tx, ty, zoomInt)
+                            if (bmp != null) key to bmp else null
+                        })
+                    }
+                }
+
+                val loaded = jobs.awaitAll().filterNotNull()
+                if (loaded.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        for ((k, v) in loaded) {
+                            tileBitmaps[k] = v
+                        }
+                        // Prune excess cached tiles to keep memory footprint bounded
+                        if (tileBitmaps.size > 80) {
+                            val removeCount = tileBitmaps.size - 50
+                            tileBitmaps.keys.take(removeCount).forEach { tileBitmaps.remove(it) }
+                        }
                     }
                 }
             }
-            tileBitmaps = newTiles
         }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
+        // 1. Primary Vector & Tile Map Canvas (Rendered only on state/camera updates, ZERO infinite loop redraws)
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectTransformGestures { centroid, pan, zoomChange, _ ->
-                        val newZoom = (cameraState.zoom + (log2(zoomChange.toDouble()))).coerceIn(8.0, 19.0)
-                        val scale = MercatorProjection.TILE_SIZE * 2.0.pow(cameraState.zoom)
-                        val worldDx = -pan.x / scale
-                        val worldDy = -pan.y / scale
+                    var lastTapTime = 0L
+                    var lastTapPos = Offset.Zero
 
-                        val (curWorldX, curWorldY) = MercatorProjection.toWorld(cameraState.centerLng, cameraState.centerLat)
-                        val (newLng, newLat) = MercatorProjection.fromWorld(
-                            curWorldX + worldDx,
-                            curWorldY + worldDy
-                        )
-                        onCameraChange(newLng, newLat, newZoom)
-                    }
-                }
-                .pointerInput(cameraState) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            val (tapLng, tapLat) = MercatorProjection.screenToLatLng(
-                                offset.x, offset.y,
-                                cameraState.centerLng, cameraState.centerLat, cameraState.zoom,
-                                size.width.toFloat(), size.height.toFloat()
-                            )
-                            onMapTapped(tapLng, tapLat, cameraState.zoom)
-                        },
-                        onDoubleTap = { offset ->
-                            val newZoom = (cameraState.zoom + 1.0).coerceAtMost(19.0)
-                            val (tapLng, tapLat) = MercatorProjection.screenToLatLng(
-                                offset.x, offset.y,
-                                cameraState.centerLng, cameraState.centerLat, cameraState.zoom,
-                                size.width.toFloat(), size.height.toFloat()
-                            )
-                            onCameraChange(tapLng, tapLat, newZoom)
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val downTime = System.currentTimeMillis()
+                        val startPos = down.position
+                        val touchSlop = viewConfiguration.touchSlop
+
+                        var pastTouchSlop = false
+                        var isDragOrPinch = false
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val canceled = event.changes.any { it.isConsumed }
+                            if (canceled) break
+
+                            val activePointers = event.changes.filter { it.pressed }
+                            if (activePointers.isEmpty()) {
+                                // All touches released
+                                if (!isDragOrPinch) {
+                                    val elapsed = System.currentTimeMillis() - downTime
+                                    if (elapsed < 350) {
+                                        val cam = currentCameraState
+                                        val now = System.currentTimeMillis()
+                                        val distFromLast = (startPos - lastTapPos).getDistance()
+
+                                        if (now - lastTapTime < 350L && distFromLast < touchSlop * 2.5f) {
+                                            // Double-tap detected: Zoom in at tap position
+                                            lastTapTime = 0L
+                                            val newZoom = (cam.zoom + 1.0).coerceAtMost(19.0)
+                                            val (tapLng, tapLat) = MercatorProjection.screenToLatLng(
+                                                startPos.x, startPos.y,
+                                                cam.centerLng, cam.centerLat, cam.zoom,
+                                                size.width.toFloat(), size.height.toFloat()
+                                            )
+                                            currentOnCameraChange(tapLng, tapLat, newZoom)
+                                        } else {
+                                            // Single-tap detected: Select feature at tap position
+                                            lastTapTime = now
+                                            lastTapPos = startPos
+                                            val (tapLng, tapLat) = MercatorProjection.screenToLatLng(
+                                                startPos.x, startPos.y,
+                                                cam.centerLng, cam.centerLat, cam.zoom,
+                                                size.width.toFloat(), size.height.toFloat()
+                                            )
+                                            currentOnMapTapped(tapLng, tapLat, cam.zoom)
+                                        }
+                                    }
+                                }
+                                break
+                            }
+
+                            if (activePointers.size > 1) {
+                                isDragOrPinch = true
+                                pastTouchSlop = true
+                            }
+
+                            val panChange = event.calculatePan()
+                            val zoomChange = event.calculateZoom()
+
+                            if (!pastTouchSlop) {
+                                val dist = (activePointers[0].position - startPos).getDistance()
+                                if (dist > touchSlop) {
+                                    pastTouchSlop = true
+                                    isDragOrPinch = true
+                                }
+                            }
+
+                            if (pastTouchSlop) {
+                                val cam = currentCameraState
+                                val newZoom = if (zoomChange != 1.0f) {
+                                    (cam.zoom + log2(zoomChange.toDouble())).coerceIn(8.0, 19.0)
+                                } else {
+                                    cam.zoom
+                                }
+                                val scale = MercatorProjection.TILE_SIZE * 2.0.pow(cam.zoom)
+                                val worldDx = -panChange.x / scale
+                                val worldDy = -panChange.y / scale
+
+                                val (curWorldX, curWorldY) = MercatorProjection.toWorld(cam.centerLng, cam.centerLat)
+                                val (newLng, newLat) = MercatorProjection.fromWorld(
+                                    curWorldX + worldDx,
+                                    curWorldY + worldDy
+                                )
+                                event.changes.forEach { it.consume() }
+                                currentOnCameraChange(newLng, newLat, newZoom)
+                            }
                         }
-                    )
+                    }
                 }
         ) {
             val width = size.width
@@ -150,67 +230,86 @@ fun GisMapView(
             val centerTileX = centerTileExactX.toInt()
             val centerTileY = centerTileExactY.toInt()
 
-            val radius = 3
+            val fracX = (centerTileExactX - centerTileX).toFloat()
+            val fracY = (centerTileExactY - centerTileY).toFloat()
+
+            val originScreenX = (width / 2f) - (fracX * tileSizeAtZoom)
+            val originScreenY = (height / 2f) - (fracY * tileSizeAtZoom)
+
+            val radius = 2
             for (dx in -radius..radius) {
                 for (dy in -radius..radius) {
-                    val tx = centerTileX + dx
-                    val ty = centerTileY + dy
-                    if (tx in 0 until numTiles && ty in 0 until numTiles) {
-                        val key = "${basemapType.name}_${zoomInt}_${tx}_$ty"
-                        val bitmap = tileBitmaps[key]
+                    val tx = (centerTileX + dx).coerceIn(0, numTiles - 1)
+                    val ty = (centerTileY + dy).coerceIn(0, numTiles - 1)
+                    val key = "${basemapType.name}_${zoomInt}_${tx}_$ty"
+                    val bmp = tileBitmaps[key] ?: tileProvider.getTileFromMemory(basemapType, tx, ty, zoomInt)
 
-                        val screenTileX = (width / 2f + (tx - centerTileExactX) * tileSizeAtZoom).toFloat()
-                        val screenTileY = (height / 2f + (ty - centerTileExactY) * tileSizeAtZoom).toFloat()
+                    val tileLeft = originScreenX + (dx * tileSizeAtZoom)
+                    val tileTop = originScreenY + (dy * tileSizeAtZoom)
 
-                        if (bitmap != null && !bitmap.isRecycled) {
-                            drawImage(
-                                image = bitmap.asImageBitmap(),
-                                dstOffset = androidx.compose.ui.unit.IntOffset(screenTileX.toInt(), screenTileY.toInt()),
-                                dstSize = androidx.compose.ui.unit.IntSize(tileSizeAtZoom.toInt() + 1, tileSizeAtZoom.toInt() + 1)
+                    if (tileLeft + tileSizeAtZoom < 0 || tileLeft > width ||
+                        tileTop + tileSizeAtZoom < 0 || tileTop > height) {
+                        continue
+                    }
+
+                    if (bmp != null && !bmp.isRecycled) {
+                        drawImage(
+                            image = bmp.asImageBitmap(),
+                            dstOffset = androidx.compose.ui.unit.IntOffset(tileLeft.toInt(), tileTop.toInt()),
+                            dstSize = androidx.compose.ui.unit.IntSize(
+                                ceil(tileSizeAtZoom).toInt() + 1,
+                                ceil(tileSizeAtZoom).toInt() + 1
                             )
-                        } else {
-                            // Fallback subtle tile grid background
-                            drawRect(
-                                color = if (basemapType == BasemapType.SATELLITE) Color(0xFF1E293B) else fallbackTileBg,
-                                topLeft = Offset(screenTileX, screenTileY),
-                                size = androidx.compose.ui.geometry.Size(tileSizeAtZoom, tileSizeAtZoom)
-                            )
-                        }
+                        )
+                    } else {
+                        drawRect(
+                            color = fallbackTileBg,
+                            topLeft = Offset(tileLeft, tileTop),
+                            size = androidx.compose.ui.geometry.Size(tileSizeAtZoom, tileSizeAtZoom)
+                        )
                     }
                 }
             }
 
-            // 2. Viewport Bounding Box for culling
+            // 2. Viewport Bounding Box for Culling
             val screenBBox = MercatorProjection.getScreenBoundingBox(
                 cameraState.centerLng, cameraState.centerLat, zoom, width, height
             )
+            val scale = MercatorProjection.TILE_SIZE * 2.0.pow(zoom)
 
-            // 3. Draw Vector Features (Polygons first, then lines, then points)
+            // 3. Draw Vector Features with LOD Culling and Zero-Allocation Path Reuse
             for (rf in features) {
                 val entity = rf.entity
                 val featBBox = GisBoundingBox(entity.minLng, entity.minLat, entity.maxLng, entity.maxLat)
                 if (!screenBBox.intersects(featBBox)) continue
 
+                // Level-of-Detail (LOD): Skip sub-pixel geometry calculations at far zoom
+                val approxW = (entity.maxLng - entity.minLng) * (scale / 360.0)
+                val approxH = (entity.maxLat - entity.minLat) * (scale / 360.0)
+                if (approxW < 1.2 && approxH < 1.2 && entity.geometryType != "Point") {
+                    continue
+                }
+
                 val isSelected = selectedFeature?.id == entity.id
                 val effectiveStrokeColor = if (isSelected) Color(0xFFF59E0B) else rf.strokeColor
-                val effectiveStrokeWidth = if (isSelected) rf.strokeWidth * 2f else rf.strokeWidth
+                val effectiveStrokeWidth = if (isSelected) rf.strokeWidth * 2.2f else rf.strokeWidth
                 val effectiveFillColor = if (isSelected) Color(0x60F59E0B) else rf.fillColor
 
                 when (val geom = rf.geometry) {
                     is FeatureGeometry.Polygon -> {
-                        drawPolygonRings(geom.rings, effectiveFillColor, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height)
+                        drawPolygonRings(geom.rings, effectiveFillColor, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height, reusablePath)
                     }
                     is FeatureGeometry.MultiPolygon -> {
                         for (rings in geom.polygons) {
-                            drawPolygonRings(rings, effectiveFillColor, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height)
+                            drawPolygonRings(rings, effectiveFillColor, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height, reusablePath)
                         }
                     }
                     is FeatureGeometry.LineString -> {
-                        drawLineString(geom.points, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height)
+                        drawLineString(geom.points, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height, reusablePath)
                     }
                     is FeatureGeometry.MultiLineString -> {
                         for (line in geom.lines) {
-                            drawLineString(line, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height)
+                            drawLineString(line, effectiveStrokeColor, effectiveStrokeWidth, cameraState, width, height, reusablePath)
                         }
                     }
                     is FeatureGeometry.Point -> {
@@ -218,7 +317,7 @@ fun GisMapView(
                             geom.point.lng, geom.point.lat,
                             cameraState.centerLng, cameraState.centerLat, zoom, width, height
                         )
-                        drawPointMarker(px, py, rf.pointRadius, effectiveFillColor, effectiveStrokeColor, isSelected, pulseAlpha)
+                        drawPointMarker(px, py, rf.pointRadius, effectiveFillColor, effectiveStrokeColor, isSelected)
                     }
                     is FeatureGeometry.MultiPoint -> {
                         for (pt in geom.points) {
@@ -226,36 +325,19 @@ fun GisMapView(
                                 pt.lng, pt.lat,
                                 cameraState.centerLng, cameraState.centerLat, zoom, width, height
                             )
-                            drawPointMarker(px, py, rf.pointRadius, effectiveFillColor, effectiveStrokeColor, isSelected, pulseAlpha)
+                            drawPointMarker(px, py, rf.pointRadius, effectiveFillColor, effectiveStrokeColor, isSelected)
                         }
                     }
                 }
             }
 
-            // 4. Draw Highlight Glow on Selected Feature if any
-            selectedFeature?.let { sel ->
-                // Draw pulsating selection beacon
-                val centerLng = (sel.minLng + sel.maxLng) / 2.0
-                val centerLat = (sel.minLat + sel.maxLat) / 2.0
-                val (sx, sy) = MercatorProjection.latLngToScreen(
-                    centerLng, centerLat,
-                    cameraState.centerLng, cameraState.centerLat, zoom, width, height
-                )
-                drawCircle(
-                    color = Color(0xFFF59E0B).copy(alpha = pulseAlpha * 0.4f),
-                    radius = 28f * pulseAlpha,
-                    center = Offset(sx, sy)
-                )
-            }
-
-            // 5. Draw User GPS Location
+            // 4. Draw User GPS Location
             userLocation?.let { loc ->
                 val (ux, uy) = MercatorProjection.latLngToScreen(
                     loc.lng, loc.lat,
                     cameraState.centerLng, cameraState.centerLat, zoom, width, height
                 )
                 val accuracy = userAccuracy ?: 15f
-                val scale = MercatorProjection.TILE_SIZE * 2.0.pow(zoom)
                 val accuracyPx = ((accuracy / 111319.5) * (scale / 360.0)).toFloat().coerceIn(12f, 200f)
 
                 // Accuracy translucent circle
@@ -278,7 +360,7 @@ fun GisMapView(
                 )
             }
 
-            // 6. Draw Target Marker (Custom coordinates or photo EXIF)
+            // 5. Draw Target Marker (Custom coordinates or photo EXIF)
             targetMarker?.let { pin ->
                 val (px, py) = MercatorProjection.latLngToScreen(
                     pin.lng, pin.lat,
@@ -295,18 +377,53 @@ fun GisMapView(
                     radius = 5f,
                     center = Offset(px, py - 18f)
                 )
-                // Pin bottom pointer
-                val path = Path().apply {
-                    moveTo(px - 7f, py - 14f)
-                    lineTo(px + 7f, py - 14f)
-                    lineTo(px, py)
-                    close()
-                }
-                drawPath(path, Color(0xFF9333EA))
+                // Pin bottom pointer using recycled path
+                reusablePath.reset()
+                reusablePath.moveTo(px - 7f, py - 14f)
+                reusablePath.lineTo(px + 7f, py - 14f)
+                reusablePath.lineTo(px, py)
+                reusablePath.close()
+                drawPath(reusablePath, Color(0xFF9333EA))
             }
         }
 
-        // Scale bar overlay in bottom-left
+        // 2. Isolated Lightweight Overlay for Selected Feature Pulse Animation
+        // Only active when a feature is selected; does NOT cause the heavy main Canvas to re-evaluate!
+        if (selectedFeature != null) {
+            val infiniteTransition = rememberInfiniteTransition(label = "highlight_pulse")
+            val pulseAlpha by infiniteTransition.animateFloat(
+                initialValue = 0.35f,
+                targetValue = 0.85f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(1000, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulseAlpha"
+            )
+
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val centerLng = (selectedFeature.minLng + selectedFeature.maxLng) / 2.0
+                val centerLat = (selectedFeature.minLat + selectedFeature.maxLat) / 2.0
+                val (sx, sy) = MercatorProjection.latLngToScreen(
+                    centerLng, centerLat,
+                    cameraState.centerLng, cameraState.centerLat, cameraState.zoom, size.width, size.height
+                )
+                if (sx >= -40f && sx <= size.width + 40f && sy >= -40f && sy <= size.height + 40f) {
+                    drawCircle(
+                        color = Color(0xFFF59E0B).copy(alpha = pulseAlpha * 0.45f),
+                        radius = 28f * pulseAlpha,
+                        center = Offset(sx, sy)
+                    )
+                    drawCircle(
+                        color = Color(0xFFF59E0B),
+                        radius = 6f,
+                        center = Offset(sx, sy)
+                    )
+                }
+            }
+        }
+
+        // 3. Scale bar overlay in bottom-left
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -332,13 +449,12 @@ private fun DrawScope.drawPointMarker(
     radius: Float,
     fillColor: Color,
     strokeColor: Color,
-    isSelected: Boolean,
-    pulseAlpha: Float
+    isSelected: Boolean
 ) {
     if (isSelected) {
         drawCircle(
-            color = Color(0xFFFBBF24).copy(alpha = pulseAlpha),
-            radius = radius * 2.2f,
+            color = Color(0xFFFBBF24),
+            radius = radius * 1.8f,
             center = Offset(x, y)
         )
     }
@@ -360,10 +476,11 @@ private fun DrawScope.drawLineString(
     strokeWidth: Float,
     cameraState: MapCameraState,
     screenWidth: Float,
-    screenHeight: Float
+    screenHeight: Float,
+    path: Path
 ) {
     if (points.size < 2) return
-    val path = Path()
+    path.reset()
     var isFirst = true
 
     for (pt in points) {
@@ -394,10 +511,11 @@ private fun DrawScope.drawPolygonRings(
     strokeWidth: Float,
     cameraState: MapCameraState,
     screenWidth: Float,
-    screenHeight: Float
+    screenHeight: Float,
+    path: Path
 ) {
     if (rings.isEmpty() || rings[0].size < 3) return
-    val path = Path()
+    path.reset()
 
     for (ring in rings) {
         if (ring.size < 3) continue

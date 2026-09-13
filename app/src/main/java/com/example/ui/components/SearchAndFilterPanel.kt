@@ -207,7 +207,7 @@ fun SearchAndFilterPanel(
                     .heightIn(max = 300.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(searchResults) { feature ->
+                items(searchResults, key = { it.id }) { feature ->
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
