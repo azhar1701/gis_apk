@@ -2,5 +2,5 @@
   "name": "HydroGIS Ciamis",
   "description": "Aplikasi GIS Android Sumber Daya Air untuk pengelolaan data spasial offline dan online, pemetaan vektor interaktif, dan sinkronisasi data.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

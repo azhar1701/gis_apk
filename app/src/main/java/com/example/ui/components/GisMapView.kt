@@ -45,7 +45,7 @@ fun GisMapView(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val tileProvider = remember { TileProvider(context) }
+    val tileProvider = remember { TileProvider.getInstance(context) }
     val fallbackTileBg = MaterialTheme.colorScheme.background
 
     // Track latest states in long-lived coroutines to prevent stale closures

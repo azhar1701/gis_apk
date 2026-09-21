@@ -4,7 +4,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import com.example.data.local.entity.GeoFeatureEntity
 import com.example.ui.components.FeatureDetailSheet
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.HydroGisTheme
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
@@ -45,7 +45,7 @@ class GreetingScreenshotTest {
     )
 
     composeTestRule.setContent {
-      MyApplicationTheme {
+      HydroGisTheme {
         FeatureDetailSheet(
           feature = sampleFeature,
           onFocusFeature = {},

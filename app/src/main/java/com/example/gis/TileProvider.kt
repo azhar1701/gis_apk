@@ -20,7 +20,18 @@ enum class BasemapType(val title: String) {
     SATELLITE("Google Hybrid (Satelit)")
 }
 
-class TileProvider(private val context: Context) {
+class TileProvider private constructor(context: Context) {
+
+    companion object {
+        @Volatile
+        private var instance: TileProvider? = null
+
+        fun getInstance(context: Context): TileProvider {
+            return instance ?: synchronized(this) {
+                instance ?: TileProvider(context.applicationContext).also { instance = it }
+            }
+        }
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
@@ -35,7 +46,7 @@ class TileProvider(private val context: Context) {
     }
 
     init {
-        // Register modern memory trim callback instead of deprecated ashmem pinning
+        // Register modern memory trim callback once on application context
         context.applicationContext.registerComponentCallbacks(object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
                 when {
@@ -89,7 +100,7 @@ class TileProvider(private val context: Context) {
             }
         }
 
-        // 3. Fetch over network
+        // 3. Fetch over network with leak-safe response.use
         val url = getTileUrl(type, x, y, z)
         try {
             val request = Request.Builder()
@@ -97,16 +108,17 @@ class TileProvider(private val context: Context) {
                 .header("User-Agent", "HydroGIS-Ciamis-Android/1.0 (Mobile App; GIS SDA Ciamis)")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                response.body?.bytes()?.let { bytes ->
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bitmap != null) {
-                        memoryCache.put(cacheKey, bitmap)
-                        try {
-                            FileOutputStream(diskFile).use { it.write(bytes) }
-                        } catch (_: Exception) {}
-                        return@withContext bitmap
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    response.body?.bytes()?.let { bytes ->
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bitmap != null) {
+                            memoryCache.put(cacheKey, bitmap)
+                            try {
+                                FileOutputStream(diskFile).use { it.write(bytes) }
+                            } catch (_: Exception) {}
+                            return@withContext bitmap
+                        }
                     }
                 }
             }

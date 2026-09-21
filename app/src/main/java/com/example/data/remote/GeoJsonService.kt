@@ -47,11 +47,11 @@ class GeoJsonService {
             .header("User-Agent", "HydroGIS-Ciamis-Android/1.0")
             .build()
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw Exception("HTTP ${response.code}: ${response.message}")
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code}: ${response.message}")
+            }
+            response.body?.string() ?: throw Exception("Respons server kosong")
         }
-        val body = response.body?.string() ?: throw Exception("Respons server kosong")
-        body
     }
 }

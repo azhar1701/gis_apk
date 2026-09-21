@@ -30,7 +30,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.GisViewModel
 import com.example.ui.components.*
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.HydroGisTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
-            MyApplicationTheme(darkTheme = isDarkMode) {
+            HydroGisTheme(darkTheme = isDarkMode) {
                 HydroGisMainScreen(viewModel = viewModel)
             }
         }
@@ -204,7 +204,10 @@ fun HydroGisMainScreen(viewModel: GisViewModel) {
                             FeatureDetailSheet(
                                 feature = feat,
                                 onFocusFeature = { viewModel.flyToFeature(feat) },
-                                onClose = { viewModel.clearSelection() },
+                                onClose = {
+                                    viewModel.clearSelection()
+                                    currentBottomSheetTab = 0
+                                },
                                 onAddInspection = { cond, note ->
                                     viewModel.addInspectionNote(feat.code.ifEmpty { feat.id }, feat.id, cond, note)
                                 }
